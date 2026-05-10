@@ -59,10 +59,9 @@ class TestParserPipeline:
             match = self.opt_pattern.match(line)
 
             if match:
-                # Стан: Збір варіантів відповідей
-                opt_letter = match.group(1).upper()
+                # Стан: Збір варіантів відповідей. Беремо тільки текст, без літери.
                 opt_text = match.group(2).strip()
-                current_options.append(f"{opt_letter}. {opt_text}")
+                current_options.append(opt_text)
             else:
                 # Стан: Збір тексту питання
                 if current_options:
@@ -101,9 +100,9 @@ class TestParserPipeline:
 
             match = self.opt_pattern.match(line)
             if match:
-                opt_letter = match.group(1).upper()
+                # Зберігаємо тільки текст варіанту
                 opt_text = match.group(2).strip()
-                options.append(f"{opt_letter}. {opt_text}")
+                options.append(opt_text)
             else:
                 if not options:
                     q_text_lines.append(line)
@@ -134,7 +133,7 @@ class TestParserPipeline:
             valid_questions.append({
                 "content": content,
                 "options": q["options"],
-                "correct_answer": q["options"][0]  # За замовчуванням правильна відповідь — перша
+                "correct_answer": q["options"][0]  # За замовчуванням правильна відповідь — перша (тепер вона теж без літери)
             })
 
         return valid_questions
