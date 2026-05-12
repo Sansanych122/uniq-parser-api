@@ -4,10 +4,10 @@ from services.supabase_writer import save_course_to_db
 
 router = APIRouter()
 
-@router.post("/save")
+# Шлях змінено на /save-course
+@router.post("/save-course")
 async def save_parsed_course(request: SaveCourseRequest):
     try:
-        # Викликаємо функцію запису в базу даних
         course_id = await save_course_to_db(
             course_title=request.course_name,
             creator_id=request.creator_id,
@@ -21,5 +21,4 @@ async def save_parsed_course(request: SaveCourseRequest):
             "course_id": course_id
         }
     except Exception as e:
-        # Якщо щось піде не так з БД, FastAPI поверне зрозумілу помилку 500
         raise HTTPException(status_code=500, detail=f"Помилка при збереженні в БД: {str(e)}")

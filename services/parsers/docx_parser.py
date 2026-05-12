@@ -2,34 +2,40 @@ import io
 from docx import Document
 from services.parsers.txt_parser import parse_txt_content
 
-def parse_docx_content(file_bytes: bytes) -> list:
+def parse_docx_content(file_bytes: bytes, filename: str = "", options_count: int = None) -> list:
     """
-    Етап 0: Видобування тексту з DOCX.
-    Збирає текст з абзаців та таблиць для максимального охоплення даних.
+    Видобування тексту з DOCX документів.
     """
+    if filename.lower().endswith('.doc'):
+        raise ValueError(
+            "Старий формат '.doc' не підтримується системою. "
+            "Будь ласка, відкрийте цей файл у Word, натисніть 'Зберегти як' "
+            "та оберіть сучасний формат '.docx', після чого завантажте його знову."
+        )
+
     docx_file = io.BytesIO(file_bytes)
     
     try:
         doc = Document(docx_file)
         text_blocks = []
 
-        # 1. Збираємо текст з усіх абзаців
+        # 1. Збираємо текст з абзаців
         for paragraph in doc.paragraphs:
-            if paragraph.text.strip():
-                text_blocks.append(paragraph.text)
+            # ВАЖЛИВО: Ми більше НЕ ігноруємо пусті рядки!
+            # Ми просто очищаємо їх від пробілів. Якщо рядок був пустим, він стане ""
+            # Це дозволить нам зберегти візуальні розриви (\n\n) між тестами.
+            text_blocks.append(paragraph.text.strip())
 
-        # 2. Додатково збираємо текст з таблиць (про всяк випадок)
+        # 2. Збираємо текст з таблиць
         for table in doc.tables:
             for row in table.rows:
                 row_text = [cell.text.strip() for cell in row.cells if cell.text.strip()]
                 if row_text:
                     text_blocks.append(" ".join(row_text))
 
-        # Об'єднуємо все в один масив тексту з роздільниками
         full_text = "\n".join(text_blocks)
         
-        # Відправляємо на конвеєр Pipeline
-        return parse_txt_content(full_text)
+        return parse_txt_content(full_text, options_count)
         
     except Exception as e:
         raise Exception(f"Помилка структури DOCX документа: {str(e)}")

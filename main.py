@@ -11,15 +11,15 @@ app = FastAPI(
 # Налаштування CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "https://uniquiz.pages.dev"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Підключаємо наші роути
-app.include_router(parse.router)
-app.include_router(save.router)
+# Підключаємо наші роути з префіксом /api
+app.include_router(parse.router, prefix="/api")
+app.include_router(save.router, prefix="/api")
 
 @app.get("/health")
 async def health_check():
