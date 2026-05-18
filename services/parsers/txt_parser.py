@@ -2,210 +2,263 @@ import re
 
 class TestParserPipeline:
     """
-    Ультра-гнучка архітектура парсингу тестів.
-    Працює з ідеальними тестами та з "університетським сміттям" (без номерів, без літер).
+    Мульти-ядерна архітектура парсингу. 
+    Одночасно застосовує 4 різні стратегії для аналізу тексту і 
+    використовує Суддю (Scoring System), щоб обрати найякісніший результат.
     """
     def __init__(self):
-        # Патерн маркерів варіантів: "А.", "Б)", "a)", "-", "+", "*", "1)"
-        self.opt_marker_pattern = re.compile(r'^([А-Яа-яA-Za-zІіЇїЄє][\.\)]|[\-\+\*]|\d+[\)])\s+')
+        # Патерн, що ловить маркери: "А. ", "Б) ", "a)", "-", "+", "*", "1) "
+        self.OPT_MARKER = re.compile(r'^\s*(?:(?:[\+\-\*]\s*)?(?:[А-Яа-яA-Za-zІіЇїЄєҐґ][\.\)]|\d+[\)])\s+|[\+\-\*](?=\s|[А-Яа-яA-Za-zІіЇїЄєҐґ]))')
         
-        # ВДОСКОНАЛЕНИЙ патерн номерів: ловить "1.", "145)", "10.1.", "10.1 "
-        self.q_num_pattern = re.compile(r'^\s*(?:\d+\.\d+(?:\.\d+)*[\.\)]?|\d+[\.\)])\s+')
+        # Патерн для видалення нумерації: "1.", "145)", "10.1.1. ", "1 "
+        self.Q_NUM = re.compile(r'^\s*(?:\d+(?:[\.\)]\s*\d+)*[\.\)]?|\d+\s+(?=[A-ZА-ЯІЇЄҐ3"\'«]))\s*')
         
-        # Патерн для очищення варіантів (ловить "+А. ", "- Б)" тощо)
-        self.clean_opt_pattern = re.compile(r'^(\+?[А-Яа-яA-Za-zІіЇїЄє][\.\)]|[\-\+\*]|\d+[\)])\s*')
+        # Патерн для очищення варіантів перед збереженням у БД
+        self.CLEAN_OPT = re.compile(r'^\s*(?:(?:[\+\-\*]\s*)?(?:[А-Яа-яA-Za-zІіЇїЄєҐґ][\.\)]|\d+[\.\)])|[\+\-\*]\s*)\s*')
 
     def parse(self, raw_text: str, options_count: int = None) -> list:
         clean_text = self._sanitize(raw_text)
-
-        # СЦЕНАРІЙ 1: Користувач вказав точну кількість варіантів
-        if options_count and options_count > 0:
-            results_fixed = self._strategy_fixed_options(clean_text, options_count)
-            if len(results_fixed) > 0:
-                return self._validate_and_clean(results_fixed)
-
-        # СЦЕНАРІЙ 2: Автоматичне розпізнавання (якщо підказки немає)
-        results_heuristic = self._strategy_heuristic(clean_text)
-        results_blocks = self._strategy_blocks(clean_text)
-
-        best_results = self._evaluate_results([results_heuristic, results_blocks])
+        
+        # ЗАПУСК 4-х АЛГОРИТМІВ ПАРАЛЕЛЬНО
+        res1 = self._strategy_blank_lines(clean_text, options_count)
+        res2 = self._strategy_numbers(clean_text, options_count)
+        res3 = self._strategy_monolith(clean_text, options_count)
+        res4 = self._strategy_markers(clean_text, options_count)
+        
+        # СУДДЯ ВИБИРАЄ НАЙКРАЩИЙ РЕЗУЛЬТАТ
+        best_results = self._evaluate([res1, res2, res3, res4], options_count)
+        
         return self._validate_and_clean(best_results)
 
     def _sanitize(self, text: str) -> str:
         text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\uf0b7]', '', text)
         text = text.replace('•', '').replace('', '')
-        # Залишаємо максимум два перенесення рядка підряд (для блоків)
+        # Видалення колонтитулів (наприклад "--- PAGE 12 ---")
+        text = re.sub(r'(?i)\n*-*\s*(?:page|стор\.?|сторінка)\s*\d+\s*-*\n*', '\n\n', text)
+        text = re.sub(r'\n\s*\d+\s*\n', '\n\n', text) 
         text = re.sub(r'\n{3,}', '\n\n', text)
         return text
 
-    def _strategy_fixed_options(self, text: str, n: int) -> list:
-        """
-        ІДЕАЛЬНА СТРАТЕГІЯ ЗА ПІДКАЗКОЮ. 
-        Розбиває текст на блоки. Якщо текст зліплений - використовує математичний поділ.
-        """
-        questions = []
-        raw_blocks = re.split(r'\n\s*\n', text)
+    # =========================================================
+    # СТРАТЕГІЯ 1: Ідеальні блоки
+    # =========================================================
+    def _strategy_blank_lines(self, text: str, n: int) -> list:
+        blocks = re.split(r'\n\s*\n', text)
+        return [q for q in (self._extract_q_opts(b.split('\n'), n) for b in blocks if b.strip()) if q]
+
+    # =========================================================
+    # СТРАТЕГІЯ 2: Орієнтація на номери
+    # =========================================================
+    def _strategy_numbers(self, text: str, n: int) -> list:
+        lines = [l.strip() for l in text.split('\n') if l.strip()]
+        chunks, curr = [], []
         
-        blocks = []
-        for raw_block in raw_blocks:
-            lines = [line.strip() for line in raw_block.split('\n') if line.strip()]
-            if not lines: continue
+        for line in lines:
+            # Якщо це номер питання (і не випадкове "1)" всередині варіантів)
+            is_q_num = self.Q_NUM.match(line)
+            is_fake_num = curr and re.match(r'^\s*\d+\)', line) and self.OPT_MARKER.match(line)
             
-            # КРОК А: Спроба розбити по номерах (якщо вони є)
-            subblocks = []
-            curr = []
-            has_numbers = False
-            for line in lines:
-                if self.q_num_pattern.match(line):
-                    has_numbers = True
-                    if curr: subblocks.append(curr)
+            if is_q_num and not is_fake_num:
+                if curr: chunks.append(curr)
+                curr = [line]
+            else:
+                curr.append(line)
+                
+        if curr: chunks.append(curr)
+        return [q for q in (self._extract_q_opts(c, n) for c in chunks) if q]
+
+    # =========================================================
+    # СТРАТЕГІЯ 3: Орієнтація на маркери відповідей А.Б.В.
+    # =========================================================
+    def _strategy_markers(self, text: str, n: int) -> list:
+        lines = [l.strip() for l in text.split('\n') if l.strip()]
+        chunks, curr = [], []
+        in_opts = False
+        
+        for line in lines:
+            if self.OPT_MARKER.match(line):
+                in_opts = True
+                curr.append(line)
+            else:
+                # Якщо ми у варіантах, і рядок починається не з малої літери -> це нове питання
+                if in_opts and not re.match(r'^\s*[а-яієїґa-z]', line):
+                    if curr: chunks.append(curr)
                     curr = [line]
+                    in_opts = False
                 else:
                     curr.append(line)
-            if curr: subblocks.append(curr)
-            
-            if has_numbers and len(subblocks) > 1:
-                blocks.extend(subblocks)
-                continue
-                
-            # КРОК Б: Математичний поділ (якщо текст зліплений і немає номерів)
-            # Якщо розмір блоку більше ніж 2 питання, перевіряємо, чи ділиться він ідеально
-            if len(lines) >= (n + 1) * 2:
-                if len(lines) % (n + 1) == 0:
-                    for i in range(0, len(lines), n + 1):
-                        blocks.append(lines[i : i + n + 1])
-                    continue
-            
-            # Якщо нічого не допомогло (або це вже ідеальний блок, відділений пустим рядком)
-            blocks.append(lines)
-
-        # Тепер формуємо фінальні питання з готових блоків
-        for block_lines in blocks:
-            if len(block_lines) > n:
-                q_text = " ".join(block_lines[:-n]) # Все крім останніх N рядків - питання
-                opts = block_lines[-n:]             # Останні N рядків - варіанти
-                
-                final_opts = []
-                correct_opt = None
-                
-                for opt in opts:
-                    # Відрізаємо літери та символи
-                    clean_opt = self.clean_opt_pattern.sub('', opt).strip()
                     
-                    if opt.startswith('+'):
-                        clean_opt = re.sub(r'^\+\s*', '', clean_opt) 
-                        correct_opt = clean_opt
-                    else:
-                        final_opts.append(clean_opt)
-                        
-                if correct_opt:
-                    final_opts.insert(0, correct_opt)
-                    
-                questions.append({
-                    "content": q_text,
-                    "options": final_opts
-                })
-                
-        return questions
+        if curr: chunks.append(curr)
+        return [q for q in (self._extract_q_opts(c, n) for c in chunks) if q]
 
-    def _strategy_heuristic(self, text: str) -> list:
-        questions = []
-        curr_q = []
-        curr_opts = []
-        lines = [line.strip() for line in text.split('\n')]
-
+    # =========================================================
+    # СТРАТЕГІЯ 4: "Суцільна каша" 
+    # =========================================================
+    def _strategy_monolith(self, text: str, n: int) -> list:
+        lines = [l.strip() for l in text.split('\n') if l.strip()]
+        chunks, curr = [], []
+        opts_gathered = 0
+        in_opts = False
+        
+        has_global_markers = sum(1 for l in lines if self.OPT_MARKER.match(l)) > 5
+        
         for line in lines:
-            if not line: continue
-            opt_match = self.opt_marker_pattern.match(line)
-            is_opt_marker = bool(opt_match)
-            is_q_marker = bool(self.q_num_pattern.match(line))
             is_new_q = False
-
-            if curr_opts:
-                if is_q_marker: is_new_q = True
-                elif len(curr_opts) >= 2 and line.endswith('?'): is_new_q = True
-                elif len(curr_opts) >= 3 and re.match(r'^[А-ЯІЇЄA-Z]', line) and not is_opt_marker: is_new_q = True
-
+            
+            if in_opts:
+                is_opt = self.OPT_MARKER.match(line) if has_global_markers else re.match(r'^\s*[\+\-\*А-ЯІЇЄҐA-Z0-9]', line)
+                if is_opt: opts_gathered += 1
+                
+                # Жорстке відрізання
+                if n and opts_gathered > int(n):
+                    is_new_q = True
+                elif not n and opts_gathered > 1:
+                    if line.endswith('?'):
+                        is_new_q = True
+                    elif len(line) > 60 and line[0].isupper() and not self.OPT_MARKER.match(line):
+                        if curr and len(curr[-1]) < 60:
+                            is_new_q = True
+                            
+            if not in_opts and (line.endswith('?') or line.endswith(':')):
+                in_opts = True
+                opts_gathered = 0
+                
             if is_new_q:
-                questions.append({"content": " ".join(curr_q), "options": curr_opts})
-                curr_q = [line]
-                curr_opts = []
+                if curr: chunks.append(curr)
+                curr = [line]
+                in_opts = False
+                opts_gathered = 0
+                if line.endswith('?'): in_opts = True
             else:
-                if is_opt_marker:
-                    clean_opt = line[opt_match.end():].strip()
-                    marker_text = opt_match.group(1)
-                    if '+' in marker_text: curr_opts.insert(0, clean_opt)
-                    else: curr_opts.append(clean_opt)
-                elif curr_opts: curr_opts.append(line)
-                elif curr_q:
-                    if curr_q[-1].endswith('?') or curr_q[-1].endswith(':'): curr_opts.append(line)
-                    else:
-                        if len(line) < 150 and re.match(r'^[-+*а-яієїa-z]', line): curr_opts.append(line)
-                        else: curr_q.append(line)
-                else: curr_q.append(line)
+                curr.append(line)
+                
+        if curr: chunks.append(curr)
+        return [q for q in (self._extract_q_opts(c, n) for c in chunks) if q]
 
-        if curr_q and len(curr_opts) >= 2:
-            questions.append({"content": " ".join(curr_q), "options": curr_opts})
-        return questions
+    # =========================================================
+    # УНІВЕРСАЛЬНИЙ РОЗБИВАЧ (Питання + Склеювання Варіантів)
+    # =========================================================
+    def _extract_q_opts(self, lines: list, n: int) -> dict:
+        if len(lines) < 2: return None
+        lines = [l for l in lines if l.strip()]
+        
+        opt_start = -1
+        # 1. Пошук першого А. Б. В.
+        for i, l in enumerate(lines):
+            if i > 0 and self.OPT_MARKER.match(l):
+                opt_start = i
+                break
+                
+        # 2. Пошук знаку питання
+        if opt_start == -1:
+            for i, l in enumerate(lines):
+                if l.endswith('?') or l.endswith(':'):
+                    opt_start = i + 1
+                    break
+                    
+        # 3. Примусове розбиття
+        if opt_start == -1 or opt_start >= len(lines):
+            if n and len(lines) > int(n):
+                opt_start = len(lines) - int(n)
+            else:
+                opt_start = 1
+                
+        q_text = " ".join(lines[:opt_start])
+        opts_raw = lines[opt_start:]
+        if not opts_raw: return None
+        
+        # ІНТЕЛЕКТУАЛЬНЕ СКЛЕЮВАННЯ БАГАТОРЯДКОВИХ ВАРІАНТІВ
+        options = []
+        curr_opt = []
+        
+        # Перевірка: чи всі варіанти мають А. Б.? Якщо так, довіряємо лише маркерам
+        strict_markers = sum(1 for o in opts_raw if self.OPT_MARKER.match(o))
+        trust_markers_only = strict_markers >= len(opts_raw) - 1
+        
+        for o in opts_raw:
+            is_marker = bool(self.OPT_MARKER.match(o))
+            is_logical = bool(re.match(r'^\s*[\+\-\*А-ЯІЇЄҐA-Z0-9]', o))
+            
+            is_new = is_marker if trust_markers_only else (is_marker or is_logical)
+                
+            if is_new and curr_opt:
+                options.append(" ".join(curr_opt))
+                curr_opt = [o]
+            else:
+                curr_opt.append(o)
+                
+        if curr_opt: options.append(" ".join(curr_opt))
+        return {"content": q_text, "options": options}
 
-    def _strategy_blocks(self, text: str) -> list:
-        questions = []
-        blocks = re.split(r'\n\s*\n', text)
-        for block in blocks:
-            lines = [l.strip() for l in block.split('\n') if l.strip()]
-            if len(lines) >= 3:
-                opt_start_idx = 1
-                for i in range(1, len(lines)):
-                    if self.opt_marker_pattern.match(lines[i]) or lines[i-1].endswith('?'):
-                        opt_start_idx = i
-                        break
-                if opt_start_idx == 1 and not lines[0].endswith('?'):
-                    opt_start_idx = max(1, len(lines) - 5)
+    # =========================================================
+    # СУДДЯ
+    # =========================================================
+    def _evaluate(self, strategies_results: list, hint_n: int) -> list:
+        best_res = []
+        best_score = -float('inf')
 
-                q_text = " ".join(lines[:opt_start_idx])
-                opts = lines[opt_start_idx:]
-                final_opts = []
-                for opt in opts:
-                    clean_o = self.clean_opt_pattern.sub('', opt).strip()
-                    if opt.startswith('+'): final_opts.insert(0, clean_o)
-                    else: final_opts.append(clean_o)
-                        
-                if len(final_opts) >= 2:
-                    questions.append({"content": q_text, "options": final_opts})
-        return questions
-
-    def _evaluate_results(self, results_list: list) -> list:
-        best_result = []
-        best_score = -1
-        for res in results_list:
+        for res in strategies_results:
             if not res: continue
+            score = 0
             num_q = len(res)
-            opt_counts = [len(q['options']) for q in res]
-            avg_opts = sum(opt_counts) / num_q if num_q else 0
-            score = num_q if 2 <= avg_opts <= 6 else num_q * 0.5
+            if num_q < 2: continue
+            
+            score += num_q * 100 # Бонус за кількість знайдених тестів
+            
+            for q in res:
+                num_opts = len(q['options'])
+                
+                # Жорсткі штрафи за "зліплені" тести
+                if num_opts < 2: score -= 300
+                elif num_opts > 8: score -= 50
+                
+                # Нагорода за підказку
+                if hint_n and num_opts == int(hint_n): score += 50
+                elif not hint_n and 3 <= num_opts <= 6: score += 20
+                
+                content = q['content'].strip()
+                if content.endswith('?'): score += 30
+                if len(content) < 15: score -= 50
+                
             if score > best_score:
                 best_score = score
-                best_result = res
-        return best_result
+                best_res = res
+
+        return best_res
 
     def _validate_and_clean(self, questions: list) -> list:
-        valid_questions = []
+        valid = []
         for q in questions:
-            content = re.sub(r'^\s*(?:\d+\.\d+(?:\.\d+)*[\.\)]?|\d+[\.\)])\s*', '', q["content"]).strip()
+            # Ідеальне зачищення номерів (видаляє навіть 10.1.1.)
+            content = self.Q_NUM.sub('', q["content"]).strip()
+            content = re.sub(r'^\s*(?:\d+[\.\)]\s*)+', '', content).strip()
             if not content: content = "Питання без тексту"
 
             clean_opts = []
+            correct_opt = None
+
             for opt in q["options"]:
-                o = self.clean_opt_pattern.sub('', opt).strip()
-                if o: clean_opts.append(o)
+                is_correct = opt.strip().startswith('+')
+                clean_o = self.CLEAN_OPT.sub('', opt).strip()
+                clean_o = re.sub(r'^\+\s*', '', clean_o).strip()
+
+                if is_correct: correct_opt = clean_o
+                if clean_o: clean_opts.append(clean_o)
+
+            # Формування бази для БД
+            if correct_opt and correct_opt in clean_opts:
+                clean_opts.remove(correct_opt)
+                clean_opts.insert(0, correct_opt)
+            elif correct_opt:
+                clean_opts.insert(0, correct_opt)
 
             if len(clean_opts) >= 2:
-                valid_questions.append({
+                valid.append({
                     "content": content,
                     "options": clean_opts,
-                    "correct_answer": clean_opts[0] 
+                    "correct_answer": clean_opts[0]
                 })
-        return valid_questions
+        return valid
 
 def parse_txt_content(content: str, options_count: int = None) -> list:
     pipeline = TestParserPipeline()
