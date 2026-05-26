@@ -6,3 +6,4 @@ google-genai
 supabase
 PyMuPDF
 python-docx
+python-dotenv
