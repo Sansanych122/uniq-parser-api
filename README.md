@@ -1,6 +1,7 @@
 <div align="center">
-  <h1>UniQuiz Parser API</h1>
-  <p><b>The core backend microservice for the UniQuiz platform, built with FastAPI.</b></p>
+  <img src="https://capsule-render.vercel.app/api?type=waving&color=005571&height=250&section=header&text=UniQuiz%20Parser%20API&fontSize=60&fontColor=ffffff&animation=fadeIn&fontAlignY=38&desc=The%20core%20backend%20microservice%20built%20with%20FastAPI&descAlignY=55&descSize=20" width="100%" alt="Header Banner" />
+  
+  <br /><br />
   
   [![FastAPI](https://img.shields.io/badge/FastAPI-005571?style=for-the-badge&logo=fastapi)](https://fastapi.tiangolo.com/)
   [![Python](https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
@@ -10,56 +11,48 @@
 
 <hr />
 
-## Overview
+# UniQuiz Parser API
 
-The **UniQuiz Parser API** is an isolated backend microservice responsible for the heaviest and most complex operations of the UniQuiz ecosystem: parsing unformatted binary documents (DOCX, PDF) and orchestrating interactions with Large Language Models (LLMs) to generate interactive test modules.
+A FastAPI-based microservice dedicated to doing the heavy lifting for the UniQuiz platform. It extracts text from unstructured academic documents and orchestrates LLM generation, ensuring the frontend doesn't crash from malformed data.
 
-By separating this logic from the frontend, we ensure the client remains lightweight and lightning-fast, while this Python microservice handles CPU-intensive text processing and asynchronous network calls to the AI and Database.
+## The Problem
 
----
+Educational materials are a formatting nightmare. University lectures and test banks in PDF or DOCX formats rarely follow clean formatting rules. Standard parsers fail when bullet points are missing. Furthermore, relying purely on LLMs to generate 30+ structured questions directly from raw text often results in JSON hallucinations, missing fields, or incorrect schema types.
 
-## The Problems We Solve
+## The Solution
 
-### 1. The "Broken Formatting" Dilemma
-**Problem:** University professors and students often share testing materials in DOCX or PDF formats that lack standard formatting. They rarely use clean A, B, C, D bullet points. Standard Regular Expressions (RegEx) fail completely when trying to parse monolithic blocks of text.
-**Solution (Human Engineering):** We implemented a hybrid approach. The frontend asks the user to input the exact number of answer options present in their file. This API receives that integer and uses it as a strict mathematical validator. The algorithm counts lines and segments, leveraging human input to perfectly slice "broken" text into structured data.
+This API acts as an aggressive filter and orchestrator:
+*   **Human Engineering Parsing:** For classic test imports, the frontend passes a user-defined integer (the exact number of answer options). The backend uses this number as a mathematical validator to slice through broken, unformatted text with surgical precision.
+*   **LLM Orchestration:** Integrates the Google Gemini API to read raw text and generate tests based on custom user prompts. 
+*   **Strict Schema Enforcement:** Catches the AI's output and forces it through strict validation schemas. If the AI hallucinates, the backend handles it, guaranteeing the frontend only receives 100% type-safe data.
 
-### 2. LLM Hallucinations & JSON Schema Integrity
-**Problem:** When asking an AI to generate 30+ questions based on a raw lecture, LLMs often break the JSON structure, hallucinate fields, or forget to mark the correct answer.
-**Solution:** This API acts as an AI Orchestrator. We use **Pydantic** models to enforce strict schema validation. The API catches broken AI responses, normalizes them, and ensures the frontend *only* receives a 100% type-safe JSON array.
+## Tech Stack
 
----
-
-## Architecture & Workflow
-
-1. **Client Request:** The React frontend sends a binary file (or raw text) alongside user parameters (e.g., custom AI instructions, question limits).
-2. **Extraction:** The API extracts raw strings using `python-docx` or `PyPDF2`.
-3. **Processing Engine:**
-   - *If Classic Import:* Text goes through the "Human Engineering" RegEx pipeline.
-   - *If AI Generation:* Text is injected into a heavily engineered system prompt and sent to **Google Gemini API**.
-4. **Validation:** The resulting data is validated against Pydantic schemas.
-5. **Database Sync:** The API uses a Supabase `SERVICE_ROLE_KEY` to safely bypass RLS and inject the generated course directly into the PostgreSQL database.
-6. **Response:** A lightweight success status is returned to the client.
-
----
+*   **FastAPI (Python):** Handles high-performance, asynchronous routing and I/O operations.
+*   **Pydantic:** Enforces strict data validation and serialization.
+*   **Google Gemini API:** Generates contextual questions from raw text.
+*   **Supabase (PostgreSQL):** Facilitates secure, direct database writes bypassing frontend limitations.
 
 ## Project Structure
 
+The architecture is modular, separating routing from business logic and data models:
+
 ```text
-uniq-parser-api/
-├── app/
-│   ├── api/                 # API Routers (endpoints)
-│   │   ├── endpoints/       # -> parse.py, ai_generate.py, courses.py
-│   │   └── router.py        # Combines all routers
-│   ├── core/                # Core configuration (CORS, Settings, Auth)
-│   │   └── config.py        # Environment variables loading
-│   ├── models/              # Pydantic Schemas for validation
-│   │   └── schemas.py       # -> CourseSchema, QuestionSchema, ParsingRequest
-│   ├── services/            # Business Logic (The heavy lifting)
-│   │   ├── ai_service.py    # Gemini API communication & Prompt Engineering
-│   │   ├── doc_parser.py    # Text extraction & Human Engineering algorithms
-│   │   └── supabase_db.py   # Secure database transactions
-│   └── main.py              # FastAPI application instance & entry point
-├── requirements.txt         # Python dependencies
-├── .env.example             # Template for environment variables
-└── README.md
+├── core/
+│   └── config.py              # Environment configuration and secrets
+├── models/
+│   └── schemas.py             # Pydantic schemas for strict data validation
+├── routers/
+│   ├── parse.py               # Endpoints for file parsing algorithms
+│   └── save.py                # Endpoints for secure database injection
+├── services/
+│   ├── parsers/
+│   │   ├── docx_parser.py     # DOCX binary extraction
+│   │   ├── pdf_parser.py      # PDF binary extraction
+│   │   └── txt_parser.py      # Plain text handling
+│   ├── file_router.py         # Routes incoming files to the appropriate parser
+│   ├── gemini_service.py      # Google Gemini API integration and prompt logic
+│   └── supabase_writer.py     # Secure database transaction handling
+├── .gitignore
+├── main.py                    # FastAPI application entry point
+└── requirements.txt           # Project dependencies
