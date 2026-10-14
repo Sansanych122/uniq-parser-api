@@ -1,6 +1,8 @@
 import os
+import time
 from google import genai
 from google.genai import types
+from google.genai.errors import APIError
 from pydantic import BaseModel, Field
 from fastapi import HTTPException
 
@@ -12,6 +14,12 @@ class AIQuestionSchema(BaseModel):
 
 class AIQuizResponse(BaseModel):
     questions: list[AIQuestionSchema]
+
+# Основна та резервна моделі
+MODELS_FALLBACK_CHAIN = [
+    "gemini-3.6-flash",       # Основна модель
+    "gemini-3.5-flash-lite",  # Запасна легка модель
+]
 
 def generate_tests_via_gemini(context_text: str, questions_count: int, user_refinement: str = "") -> list:
     api_key = os.getenv("GEMINI_API_KEY")
@@ -34,22 +42,41 @@ def generate_tests_via_gemini(context_text: str, questions_count: int, user_refi
     if user_refinement:
         full_prompt += f"ДОДАТКОВІ НАКАЗИ ВІД КОРИСТУВАЧА: {user_refinement}\n\n"
 
-    try:
-        response = client.models.generate_content(
-            model='gemini-3.5-flash',
-            contents=full_prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=system_instruction,
-                response_mime_type="application/json",
-                response_schema=AIQuizResponse,
-                temperature=0.2, # Тримаємо температуру низькою, щоб не фантазував
-            ),
-        )
-        
-        # Перевіряємо, чи ця залізяка дійсно повернула те, що ми просили
-        validated_data = AIQuizResponse.model_validate_json(response.text)
-        return [q.model_dump() for q in validated_data.questions]
-        
-    except Exception as e:
-        print(f"🔥 АХТУНГ! Помилка генерації: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Google API впало в кому: {str(e)}")
+    config = types.GenerateContentConfig(
+        system_instruction=system_instruction,
+        response_mime_type="application/json",
+        response_schema=AIQuizResponse,
+        temperature=0.2, # Тримаємо температуру низькою, щоб не фантазував
+    )
+
+    last_error = None
+
+    for model_name in MODELS_FALLBACK_CHAIN:
+        # 2 спроби на кожну модель перед перемиканням
+        for attempt in range(2):
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=full_prompt,
+                    config=config,
+                )
+                
+                # Перевіряємо та валідуємо відповідь
+                validated_data = AIQuizResponse.model_validate_json(response.text)
+                return [q.model_dump() for q in validated_data.questions]
+                
+            except APIError as e:
+                last_error = e
+                # Якщо сервер перевантажений (503) або вперлися в ліміти (429) — чекаємо і пробуємо ще / міняємо модель
+                if e.code in [503, 429]:
+                    print(f"⚠️ [{model_name}] Тимчасово недоступна (код {e.code}), спроба {attempt + 1}/2...")
+                    time.sleep(1.5)
+                    continue
+                # При інших помилках API (наприклад, невалідний ключ) не ретраїмо
+                break
+            except Exception as e:
+                last_error = e
+                break
+
+    print(f"🔥 АХТУНГ! Помилка генерації на всіх моделях: {str(last_error)}")
+    raise HTTPException(status_code=500, detail=f"Google API впало в кому: {str(last_error)}")
